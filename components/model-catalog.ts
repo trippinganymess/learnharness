@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { ModelCatalogResponse } from "@/src/core";
+import { useNotifyHub } from "@/components/server-events";
 import { onSettingsSaved } from "@/components/settings-signal";
 
 // Shared stale-while-revalidate catalog. Metadata refreshes retain the last
@@ -13,6 +14,16 @@ let catalogGeneration = 0;
 let stopCatalogSignals: (() => void) | undefined;
 const catalogReaders = new Set<() => void>();
 const publishCatalog = () => { for (const reader of catalogReaders) reader(); };
+// The shared cache coalesces the per-reader SSE subscriptions into one fetch.
+let notificationQueued = false;
+function revalidateNotifiedCatalog(): void {
+	if (notificationQueued) return;
+	notificationQueued = true;
+	queueMicrotask(() => {
+		notificationQueued = false;
+		fetchCatalog(true);
+	});
+}
 
 function fetchCatalog(revalidate = false): void {
 	if (revalidate) { catalogGeneration++; catalogInflight = undefined; }
@@ -32,6 +43,13 @@ function fetchCatalog(revalidate = false): void {
 }
 
 export function useModelCatalog(): { catalog: ModelCatalogResponse | undefined; failed: boolean; refresh: () => void } {
+	const hub = useNotifyHub();
+	useEffect(() => {
+		if (!hub) return;
+		const off = hub.subscribe("catalog-changed", revalidateNotifiedCatalog);
+		const resync = hub.onResync(revalidateNotifiedCatalog);
+		return () => { off(); resync(); };
+	}, [hub]);
 	const [snapshot, setSnapshot] = useState(() => ({ catalog: catalogCache, failed: catalogError }));
 	useEffect(() => {
 		const first = catalogReaders.size === 0;
@@ -49,6 +67,9 @@ export function useModelCatalog(): { catalog: ModelCatalogResponse | undefined; 
 		read();
 		return () => { catalogReaders.delete(read); if (!catalogReaders.size) { stopCatalogSignals?.(); stopCatalogSignals = undefined; } };
 	}, []);
-	const refresh = useCallback(() => fetchCatalog(true), []);
+	const refresh = useCallback(() => {
+		void fetch("/api/models/refresh", { method: "POST" }).catch(() => undefined);
+		fetchCatalog(true);
+	}, []);
 	return { ...snapshot, refresh };
 }

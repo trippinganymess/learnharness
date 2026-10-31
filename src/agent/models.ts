@@ -7,6 +7,8 @@ import {
 	type Models,
 	type MutableModels,
 	type StreamFunction,
+	type ModelsStore,
+	type Provider,
 } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { lazyApi, lazyStream } from "@earendil-works/pi-ai/api/lazy";
@@ -38,7 +40,7 @@ export const APP_IDENTITY = Object.freeze({
  *
  * An "engine" is the model + the stream function the agent loop runs on —
  * the two things a test fake replaces. Production engines resolve the model
- * from pi-ai's static catalogs and stream through the same Models
+ * from pi-ai's synchronous last-known catalogs and stream through the same Models
  * collection.
  */
 
@@ -53,6 +55,23 @@ export interface PiEngine {
 export type { ThinkingLevel };
 
 let collection: ReturnType<typeof createModels> | undefined;
+interface CatalogSource {
+	modelsStore: ModelsStore;
+	provider(native: Provider): Provider;
+}
+let retainedCustomProviders: Provider[] = [];
+let catalogSource: CatalogSource | undefined;
+
+/** Pi owns refresh/publication; the server supplies persistence and discovery adapters. */
+export function configureCatalogSource(source: CatalogSource): void {
+	if (catalogSource === source) return;
+	catalogSource = source;
+	retainedCustomProviders = collection?.getProviders().filter((provider) => providerSource?.isCustom(provider.id)) ?? [];
+	// Supersede old refreshes through Pi without removing providers: existing
+	// engines retain a usable collection and their in-flight request setup.
+	for (const provider of collection?.getProviders() ?? []) collection!.setProvider(provider);
+	collection = undefined;
+}
 interface ProviderSource {
 	sync(models: MutableModels): void;
 	isCustom(id: string): boolean;
@@ -81,16 +100,19 @@ export function configureProviderSource(source: ProviderSource): void {
  *  keyPresent. */
 export function piModels() {
 	if (!collection) {
-		collection = createModels({ identity: APP_IDENTITY });
+		collection = createModels({ identity: APP_IDENTITY, modelsStore: catalogSource?.modelsStore });
 		for (const provider of builtinProviders()) {
 			// Keep the native Bedrock implementation reachable by standalone tracing.
 			// Pi's default Node-only loader hides this import from bundlers. Only
 			// replace its lazy forwarding; preserve the native factory's auth/catalog.
-			collection.setProvider(provider.id === "amazon-bedrock"
+			const native = provider.id === "amazon-bedrock"
 				? { ...provider, ...lazyApi(() => import("@earendil-works/pi-ai/api/bedrock-converse-stream")) }
-				: provider);
+				: provider;
+			collection.setProvider(catalogSource?.provider(native) ?? native);
 		}
 		collection.setProvider(createClaudeCodeProvider(streamClaudeCode));
+		for (const provider of retainedCustomProviders) collection.setProvider(provider);
+		retainedCustomProviders = [];
 	}
 	providerSource?.sync(collection);
 	return collection;

@@ -6,10 +6,9 @@
  * /api/settings/* — the per-chat settings PUT is retired from the UI;
  * legacy records' per-chat overrides still resolve server-side).
  *
- * pi-ai owns ALL the data: the catalog (id/name/cost/context/modality/
- * thinkingLevelMap) and the per-model thinking truth
- * (getSupportedThinkingLevels / clampThinkingLevel). This module only
- * projects and validates — no second registry to drift out of sync.
+ * pi-ai owns the assembled registry, thinking truth, authentication and
+ * refresh publication. Dynamic provider adapters update this SAME registry;
+ * this module projects and validates, never maintains another model list.
  *
  * Federation: `getModels()` is called per keyed provider (federated, the
  * model-slots wave), so a provider appears in the picker exactly when its
@@ -26,6 +25,7 @@ import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
 import { nativeSubscriptionId, nativeSubscriptionConnected, nativeSubscriptionModel, nativeSubscriptionModels, refreshSubscriptionModels } from "../agent/subscription-bridge.ts";
 
 export async function refreshConnectionCatalog(provider?: string): Promise<void> {
+	await catalogReady;
 	await Promise.all([
 		!provider || provider === "chatgpt" ? refreshChatGPTModels(piModels().getModels("openai").filter((m): m is Model<"openai-responses"> => m.api === "openai-responses")) : Promise.resolve(),
 		!provider || nativeSubscriptionId(provider) ? refreshSubscriptionModels() : Promise.resolve(),
@@ -37,7 +37,26 @@ function connectionModel(provider: string, id: string): Model<Api> | undefined {
 }
 function connectionProviderIds(): string[] { return [...piModels().getProviders().map((p) => p.id), "chatgpt", ...NATIVE_SUBSCRIPTIONS.map((p) => p.logicalId)]; }
 import { settingsStore } from "../store/settings.ts";
-import { effectiveSettings } from "./stores.ts";
+import { effectiveSettings, catalogReady } from "./stores.ts";
+import { emit } from "../core/events.ts";
+
+/** Thin trigger only: Pi owns auth, concurrency, persistence and publication. */
+export async function refreshApiKeyCatalog(providers = ["openrouter", "radius"], force = false): Promise<void> {
+	await catalogReady;
+	const models = piModels();
+	const configured = providers.filter((id) => {
+		const info = AUTH_PROVIDER_KEYS.find((provider) => provider.id === id);
+		return info && keyValue(info.envVar) !== undefined;
+	});
+	const before = JSON.stringify(configured.flatMap((id) => models.getModels(id)));
+	const result = await models.refresh({ providers: configured, force });
+	if (JSON.stringify(configured.flatMap((id) => models.getModels(id))) !== before) emit("catalog-changed", {});
+	for (const id of result.errors.keys()) console.warn(`[catalog] ${id} refresh failed; retaining last-known-good models`);
+}
+
+export function requestApiKeyCatalogRefresh(providers?: string[], force = false): void {
+	void refreshApiKeyCatalog(providers, force).catch(() => console.warn("[catalog] refresh unavailable; retaining last-known-good models"));
+}
 import { keyValue } from "./keys.ts";
 import type { ChatSettings } from "../core/contracts/chat.ts";
 import type {
@@ -60,6 +79,23 @@ import {
 	type ModelSlotName,
 	type ModelsSettings,
 } from "../core/settings.ts";
+
+export async function loadModelCatalog(): Promise<ModelCatalogResponse> {
+	await refreshConnectionCatalog();
+	requestApiKeyCatalogRefresh();
+	return modelCatalog();
+}
+
+/** Cache restoration is hidden at the server's settings-write seam. */
+export async function validateRestoredChatSettings(settings: ChatSettings): Promise<SettingsValidation> {
+	await catalogReady;
+	return validateChatSettings(settings);
+}
+
+export async function readSettingsForModelWrite() {
+	await catalogReady;
+	return settingsStore.readSettings();
+}
 
 /** The picker's client-safe model entry (contract: core/contracts/models.ts). */
 export type ModelDto = ModelCatalogEntry;

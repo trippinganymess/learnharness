@@ -12,6 +12,18 @@ import { jobStore } from "../store/jobs.ts";
 import { settingsStore } from "../store/settings.ts";
 import { resolveSettings, type EffectiveSettings } from "../core/settings-resolution.ts";
 import { syncCustomProvider } from "./custom-provider.ts";
+import { configureCatalogSource, piModels } from "../agent/models.ts";
+import { createFileModelsStore } from "../store/model-catalog.ts";
+import { withOpenRouterDiscovery } from "./provider-catalog/openrouter.ts";
+import { PATHS } from "../../config.ts";
+import path from "node:path";
+
+configureCatalogSource({
+	modelsStore: createFileModelsStore(path.join(PATHS.data, "model-catalog")),
+	provider: (native) => native.id === "openrouter" ? withOpenRouterDiscovery(native, () => process.env.OPENROUTER_API_KEY || undefined) : native,
+});
+/** Cache-only startup; network updates are driven by catalog requests. */
+export const catalogReady = piModels().refresh({ allowNetwork: false, providers: ["openrouter", "radius"] });
 /** The wired adapters. Satisfies core/graph.ts's GraphDeps structurally. */
 export const stores = {
 	chatStore,

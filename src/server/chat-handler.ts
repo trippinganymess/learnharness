@@ -48,7 +48,8 @@ import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-ser
 import { hasProbeDone, danglingQuestionOf } from "../core/native-messages.ts";
 import { composeInstructions } from "../agent/teacher-agent.ts";
 import { ensureCompacted, kickCompaction, effectiveThresholdTokens } from "./compaction.ts";
-import { catalogContextLimits, refreshConnectionCatalog } from "./model-catalog.ts";
+import { catalogContextLimits, refreshConnectionCatalog, requestApiKeyCatalogRefresh } from "./model-catalog.ts";
+import { configureKeyCatalogRefresh } from "./keys.ts";
 import { emit } from "../core/events.ts";
 import { settledTurnResponse } from "./turn-runs.ts";
 import { asAgentMessages } from "../core/native-messages.ts";
@@ -136,6 +137,8 @@ export const extraction = createExtractionPipeline({
 // delivers its steers through THIS composition root (one event: the steer
 // marker, appended natively under the turn claim), and crash recovery
 // re-spawns orphaned sub-agent loops through THIS runner.
+configureKeyCatalogRefresh((providers) => requestApiKeyCatalogRefresh(providers, true));
+
 setTurnRunner(async (chatId, input) => {
 	const res = await handleChatInput(chatId, input);
 	// Drive the stream to completion server-side — nobody else will read it,

@@ -39,7 +39,8 @@ import {
 	effectiveSettings,
 	promptOverrides,
 	readSettingsRecord,
-	validateChatSettings,
+	readSettingsForModelWrite,
+	validateRestoredChatSettings,
 	validateModelsSettings,
 	writeSettingsRecord,
 	type SettingsBodyResult,
@@ -65,13 +66,13 @@ export async function PUT(request: Request, ctx: { params: Promise<{ section: st
 		return Response.json({ error: parsed.error }, { status: 400 });
 	}
 	// Compare against the same record that this whole-section write replaces.
-	const record = readSettingsRecord() ?? { version: 1 };
+	const record = (section === "chat" || section === "models" ? await readSettingsForModelWrite() : readSettingsRecord()) ?? { version: 1 };
 	let agentHealed: AgentSettings | undefined;
 
 	// Section-specific cross-validation (against the catalog / the prompt
 	// store) — the parsers only see shapes.
 	if (section === "chat") {
-		const verdict = validateChatSettings(parsed.settings as ChatSettings);
+		const verdict = await validateRestoredChatSettings(parsed.settings as ChatSettings);
 		if (!verdict.ok) {
 			return Response.json({ error: verdict.error, supported: verdict.supported }, { status: 400 });
 		}

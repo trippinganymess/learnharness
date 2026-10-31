@@ -57,11 +57,19 @@ import { isSubscriptionProvider, subscriptionConnected } from "../agent/subscrip
 import { customProviderAvailable, installCustomProviderSource } from "./custom-provider.ts";
 import { claudeCodeAvailable } from "./claude-code-config.ts";
 import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
+import { emit } from "../core/events.ts";
 import { CUSTOM_AUTH_BINDING } from "../core/custom-provider-auth.ts";
 
 // Shared HMR-stable provenance lets external CLIs exclude file-only injections
 // without importing this store-backed module into the agent layer.
 import { authEnvRecord as boot } from "../core/auth-env.ts";
+
+let refreshKeyCatalog: ((providers: string[]) => void) | undefined;
+
+/** Composition injects the optional side-channel trigger; keys never import catalogs. */
+export function configureKeyCatalogRefresh(refresh: (providers: string[]) => void): void {
+	refreshKeyCatalog = refresh;
+}
 
 /** Ordinary writable key names. Custom auth writes must use the atomic
  * endpoint-binding seam, never the generic single-key API. */
@@ -216,12 +224,17 @@ export function saveKey(id: string, value: string): { ok: true; status: AuthKeyS
 	if (id === CUSTOM_PROVIDER.envVar || id === CUSTOM_AUTH_BINDING) return { ok: false, error: "Use the custom endpoint editor" };
 	const shape = isProviderEnvVar(id) ? genericProviderKeyGuard(id, value) : validateKeyShape(id, value);
 	if (!shape.ok) return { ok: false, error: shape.error };
+	const previous = keyValue(id);
 	const trimmed = value.trim();
 	authStore.setAuthVar(id, trimmed);
 	const record = boot();
 	if (!record.realEnv.has(id)) {
 		process.env[id] = trimmed;
 		record.fillGap.add(id);
+	}
+	if (isProviderEnvVar(id) && previous !== keyValue(id)) {
+		emit("catalog-changed", {});
+		refreshKeyCatalog?.(AUTH_PROVIDER_KEYS.filter((provider) => provider.envVar === id).map((provider) => provider.id));
 	}
 	// validateKeyShape guarantees catalog membership, so the row exists.
 	return { ok: true, status: keyStatuses().find((s) => s.id === id)! };
@@ -234,12 +247,14 @@ export function saveKey(id: string, value: string): { ok: true; status: AuthKeyS
  */
 export function deleteKey(id: string): AuthKeyStatus {
 	if (id === CUSTOM_PROVIDER.envVar || id === CUSTOM_AUTH_BINDING) throw new Error("Use the custom endpoint editor");
+	const previous = keyValue(id);
 	authStore.deleteAuthVar(id);
 	const record = boot();
 	if (record.fillGap.has(id) && !record.realEnv.has(id)) {
 		delete process.env[id];
 		record.fillGap.delete(id);
 	}
+	if (isProviderEnvVar(id) && previous !== keyValue(id)) emit("catalog-changed", {});
 	return keyStatuses().find((s) => s.id === id)!;
 }
 
