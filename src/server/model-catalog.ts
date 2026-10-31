@@ -40,18 +40,31 @@ import { settingsStore } from "../store/settings.ts";
 import { effectiveSettings, catalogReady } from "./stores.ts";
 import { emit } from "../core/events.ts";
 
+const catalogFlights = new WeakMap<ReturnType<typeof piModels>, Map<string, Promise<void>>>();
+
 /** Thin trigger only: Pi owns auth, concurrency, persistence and publication. */
 export async function refreshApiKeyCatalog(providers = ["openrouter", "radius"], force = false): Promise<void> {
 	await catalogReady;
 	const models = piModels();
-	const configured = providers.filter((id) => {
+	let flights = catalogFlights.get(models);
+	if (!flights) { flights = new Map(); catalogFlights.set(models, flights); }
+	await Promise.all(providers.map(async (id) => {
 		const info = AUTH_PROVIDER_KEYS.find((provider) => provider.id === id);
-		return info && keyValue(info.envVar) !== undefined;
-	});
-	const before = JSON.stringify(configured.flatMap((id) => models.getModels(id)));
-	const result = await models.refresh({ providers: configured, force });
-	if (JSON.stringify(configured.flatMap((id) => models.getModels(id))) !== before) emit("catalog-changed", {});
-	for (const id of result.errors.keys()) console.warn(`[catalog] ${id} refresh failed; retaining last-known-good models`);
+		if (!info || keyValue(info.envVar) === undefined) return;
+		// A routine picker read must not supersede an explicit refresh and then
+		// return the old "fresh" cache. Pi remains the only refresh implementation.
+		const pending = flights.get(id);
+		if (pending && !force) return pending;
+		const operation = (async () => {
+			const before = JSON.stringify(models.getModels(id));
+			const result = await models.refresh({ providers: [id], force });
+			if (JSON.stringify(models.getModels(id)) !== before) emit("catalog-changed", {});
+			if (result.errors.has(id)) console.warn(`[catalog] ${id} refresh failed; retaining last-known-good models`);
+		})();
+		flights.set(id, operation);
+		try { await operation; }
+		finally { if (flights.get(id) === operation) flights.delete(id); }
+	}));
 }
 
 export function requestApiKeyCatalogRefresh(providers?: string[], force = false): void {

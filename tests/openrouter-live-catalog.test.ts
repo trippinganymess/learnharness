@@ -115,11 +115,47 @@ test("successful live absence is authoritative, and unsupported/incomplete rows 
 		{ ...remoteModel, id: "catalog-fixture/no-tools", supported_parameters: [] },
 		{ ...remoteModel, id: "catalog-fixture/no-limits", context_length: null, top_provider: null },
 		{ ...remoteModel, id: "catalog-fixture/unknown-thinking", supported_parameters: ["tools", "reasoning"] },
-		{ ...remoteModel, id: "catalog-fixture/no-cache-price", pricing: { prompt: "0", completion: "0" } },
 	] });
 	assert.equal((await piModels().refresh({ providers: ["openrouter"], force: true })).errors.size, 0);
 	assert.deepEqual(piModels().getModels("openrouter"), []);
 	assert.throws(() => piEngineForSpec({ provider: "openrouter", id: discoveredId }), /catalog has no model/);
+});
+
+test("Particle-1's real catalog metadata is selectable with published reasoning efforts and optional cache pricing", async () => {
+	const particle = JSON.parse(fs.readFileSync(new URL("./fixtures/openrouter-particle-1.json", import.meta.url), "utf8"));
+	const models = createModels();
+	models.setProvider(withOpenRouterDiscovery(openrouterProvider(), () => process.env.OPENROUTER_API_KEY));
+	assert.equal(models.getModel("openrouter", particle.id), undefined);
+	globalThis.fetch = async () => Response.json({ data: [particle] });
+	assert.equal((await models.refresh({ force: true })).errors.size, 0);
+	const model = models.getModel("openrouter", particle.id);
+	assert.ok(model, "Particle's advertised reasoning and optional pricing must not exclude it");
+	assert.equal(model.reasoning, true);
+	assert.equal(model.contextWindow, 1048576);
+	assert.equal(model.maxTokens, 131072);
+	assert.deepEqual(model.cost, { input: 0.05, output: 0.5, cacheRead: 0.003, cacheWrite: 0 });
+	assert.deepEqual(model.thinkingLevelMap, { off: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" });
+	globalThis.fetch = async (input, init) => {
+		const request = new Request(input, init);
+		assert.equal(request.url, "https://openrouter.ai/api/v1/chat/completions");
+		const payload = await request.json();
+		assert.equal(payload.model, particle.id);
+		assert.deepEqual(payload.reasoning, { effort: "high" });
+		return completion(false);
+	};
+	assert.equal((await models.streamSimple(model, normalizeContext({ messages: [{ role: "user", content: "offline", timestamp: 0 }] }), { reasoning: "high" }).result()).stopReason, "stop");
+});
+
+test("published reasoning efforts restrict selectors, respect mandatory reasoning, and accept null as all efforts", async () => {
+	const models = createModels();
+	models.setProvider(withOpenRouterDiscovery(openrouterProvider(), () => process.env.OPENROUTER_API_KEY));
+	globalThis.fetch = async () => Response.json({ data: [
+		{ ...remoteModel, id: "catalog-fixture/mandatory", supported_parameters: ["tools", "reasoning"], reasoning: { supported_efforts: ["high", "none"], mandatory: true } },
+		{ ...remoteModel, id: "catalog-fixture/all-efforts", supported_parameters: ["tools", "reasoning"], reasoning: { supported_efforts: null, mandatory: false } },
+	] });
+	assert.equal((await models.refresh()).errors.size, 0);
+	assert.deepEqual(models.getModel("openrouter", "catalog-fixture/mandatory")?.thinkingLevelMap, { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null });
+	assert.deepEqual(models.getModel("openrouter", "catalog-fixture/all-efforts")?.thinkingLevelMap, { off: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" });
 });
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }

@@ -46,6 +46,23 @@ test("GET serves the synchronous catalog before an upstream response; publicatio
 	} finally { off(); }
 });
 
+test("ordinary picker reads do not cancel a forced update while the last catalog is fresh", async () => {
+	const { refreshApiKeyCatalog, modelCatalog } = await import("../src/server/model-catalog.ts");
+	const started = deferred<void>();
+	const upstream = deferred<Response>();
+	globalThis.fetch = async () => { started.resolve(); return upstream.promise; };
+	const forced = refreshApiKeyCatalog(["openrouter"], true);
+	await started.promise;
+	await GET();
+	upstream.resolve(Response.json({ data: [{
+		id: "catalog-fixture/forced-update", name: "Forced update", context_length: 8192,
+		architecture: { input_modalities: ["text"], output_modalities: ["text"] }, supported_parameters: ["tools"],
+		top_provider: { max_completion_tokens: 1024 }, pricing: { prompt: "0", completion: "0" },
+	}] }));
+	await forced;
+	assert.ok(modelCatalog().models.some((model) => model.id === "catalog-fixture/forced-update"));
+});
+
 test("Radius native refresh is reused unchanged and restores through the injected Pi ModelsStore", async () => {
 	const modelsStore = createFileModelsStore(path.join(directory, "radius-catalog"));
 	const options = { modelsStore, authContext: { env: async (name: string) => name === "RADIUS_API_KEY" ? "synthetic-radius-key" : undefined, fileExists: async () => false } };

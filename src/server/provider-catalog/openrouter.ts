@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { isModelType, type Api, type Model, type ModelsStoreEntry, type Provider } from "@earendil-works/pi-ai";
+import { isModelType, type Api, type Model, type ModelsStoreEntry, type Provider, type ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { openRouterCost } from "@earendil-works/pi-ai/providers/openrouter-api";
 import { cachedCatalogSchema } from "../../core/catalog-cache.ts";
 import { readBoundedJson } from "../custom-provider-body.ts";
@@ -11,12 +11,15 @@ const priceRates = z.object({ prompt: tokenPrice, completion: tokenPrice, input_
 const prices = priceRates.extend({ overrides: z.array(priceRates.partial().extend({
 	min_prompt_tokens: positive.optional(), utc_start: z.number().int().optional(), utc_end: z.number().int().optional(), utc_days: z.array(z.string()).optional(),
 }).passthrough()).optional() }).passthrough();
+const effort = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const reasoningSchema = z.object({ supported_efforts: z.array(effort).nullable().optional(), mandatory: z.boolean().optional() });
 const rowSchema = z.object({
 	id: z.string().min(1), name: z.string().min(1), context_length: positive.nullish(),
 	architecture: z.object({ input_modalities: z.array(z.string()), output_modalities: z.array(z.string()) }),
 	supported_parameters: z.array(z.string()),
 	top_provider: z.object({ context_length: positive.nullish(), max_completion_tokens: positive.nullish() }).nullish(),
 	pricing: prices,
+	reasoning: reasoningSchema.nullish(),
 });
 const pageSchema = z.object({ data: z.array(rowSchema).max(10000), links: z.object({ next: z.string().nullable() }).optional(), total_count: z.number().int().nonnegative().optional() });
 const scopeFor = (key: string, baseUrl: string) => createHash("sha256").update(JSON.stringify([key, baseUrl])).digest("hex");
@@ -73,20 +76,29 @@ export function withOpenRouterDiscovery(native: Provider, readKey: () => string 
 					const donor = baseline.find((model) => model.id === row.id);
 					const contextWindow = row.top_provider?.context_length ?? row.context_length ?? donor?.contextWindow;
 					const maxTokens = row.top_provider?.max_completion_tokens ?? donor?.maxTokens;
-					// Unknown reasoning models require verified thinking metadata, not a name heuristic.
 					const reasoning = row.supported_parameters.includes("reasoning");
-					if (!contextWindow || !maxTokens || (!donor && reasoning)) continue;
-					if (!donor && (row.pricing.input_cache_read === undefined || row.pricing.input_cache_write === undefined)) continue;
+					let thinkingLevelMap = donor?.thinkingLevelMap;
+					if (reasoning && !donor) {
+						const supported = row.reasoning?.supported_efforts;
+						if (supported === undefined) continue;
+						const allowed = supported ?? effort.options;
+						thinkingLevelMap = Object.fromEntries(effort.options.map((level) => [
+							level === "none" ? "off" : level,
+							allowed.includes(level) && !(level === "none" && row.reasoning?.mandatory) ? level : null,
+						])) as ThinkingLevelMap;
+					}
+					if (!contextWindow || !maxTokens) continue;
 					if (byId.has(row.id)) throw new Error("Duplicate OpenRouter model ID");
 					const cost = openRouterCost({ ...row.pricing,
 						overrides: row.pricing.overrides?.filter((override) => Object.keys(override).every((field) => ["prompt", "completion", "input_cache_read", "input_cache_write", "min_prompt_tokens", "utc_start", "utc_end", "utc_days"].includes(field))),
-						input_cache_read: row.pricing.input_cache_read ?? String(donor!.cost.cacheRead / 1000000),
-						input_cache_write: row.pricing.input_cache_write ?? String(donor!.cost.cacheWrite / 1000000),
+						input_cache_read: row.pricing.input_cache_read ?? (donor ? String(donor.cost.cacheRead / 1000000) : undefined),
+						input_cache_write: row.pricing.input_cache_write ?? (donor ? String(donor.cost.cacheWrite / 1000000) : undefined),
 					});
 					byId.set(row.id, {
 						...donor, id: row.id, name: row.name, provider: native.id,
 						api: donor?.api ?? "openai-completions", baseUrl: donor?.baseUrl ?? baseUrl,
 						type: "chat", reasoning: donor?.reasoning ?? reasoning,
+						...(thinkingLevelMap ? { thinkingLevelMap } : {}),
 						input: row.architecture.input_modalities.includes("image") ? ["text", "image"] : ["text"],
 						contextWindow, maxTokens,
 						cost,

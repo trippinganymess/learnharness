@@ -24,6 +24,9 @@ registry, publication queue, or persistence protocol.
   The key module does not import catalog assembly or its storage composition.
 - Reconfiguring catalog wiring uses Pi to supersede old refreshes without
   deleting providers from collections held by existing engines.
+- Ordinary picker reads reuse an in-flight background update for the same
+  provider/Pi collection. They do not supersede a forced refresh and return an
+  older still-fresh cache. Explicit forced updates retain Pi's supersession.
 - Picker DTOs, settings validation, context limits, pricing, and
   `piEngineForSpec()` all read the same Pi provider lists synchronously.
 
@@ -47,10 +50,15 @@ The provider skips fresh checks for one hour unless `force` is set.
 
 Exact bundled matches retain their API route, thinking map, and compatibility
 metadata. New IDs require text input/output, tool support, positive token
-limits, and explicit token/cache prices. Unknown reasoning models are currently
-excluded because their precise thinking metadata is not established. Negative
-router-alias prices are not represented as free. Dedicated native image and
-classifier operations are preserved, but not exposed as chat picker rows.
+limits, and explicit input/output prices. New reasoning models use the catalog's
+`reasoning.supported_efforts` to build Pi thinking maps; unsupported levels and
+mandatory-reasoning disable controls are excluded. Models lacking both bundled
+thinking metadata and published effort selection remain excluded. Optional cache
+rates are normalized by Pi's existing `openRouterCost()` (missing rates become
+zero; this is the SDK estimate, not evidence of a published free cache-write
+operation). Negative router-alias prices are not represented as free. Dedicated
+native image and classifier operations are preserved, but not exposed as chat
+picker rows.
 
 Pricing conversion and supported prompt-length tiers reuse Pi's
 `openRouterCost()`. Time-dependent pricing cannot be represented by Pi's
@@ -102,6 +110,10 @@ on the native Radius implementation.
 - `tests/catalog-notification-coalescing.test.tsx`: several readers share one
   catalog request per SSE notification or reconnect.
 
+- `tests/fixtures/openrouter-particle-1.json`: public catalog metadata captured
+  for the missing-model regression. Particle advertises reasoning efforts but
+  omits cache-write pricing; both must be handled without excluding the model.
+
 These are offline transport proofs, not claims that a real account was billed or
 that inference against a live provider has been exercised.
 
@@ -111,4 +123,5 @@ that inference against a live provider has been exercised.
   `models-store.d.ts`, `providers/radius.js`, `providers/openrouter.js`, and
   `providers/all.js`.
 - [OpenRouter model schema, pagination, capabilities and pricing](https://openrouter.ai/docs/guides/overview/models)
+- [OpenRouter reasoning metadata and effort selection](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
 - [OpenRouter model-list reference](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
